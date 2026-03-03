@@ -17,6 +17,8 @@ require('./tools/scheduler_tools');
 require('./tools/agents');
 require('./tools/state_tools');
 require('./tools/realworld');
+require('./tools/semantic_memory');
+require('./tools/social');
 
 async function cmd(input, parts) {
   const sub = parts[1];
