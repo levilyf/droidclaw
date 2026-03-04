@@ -161,3 +161,4 @@ async function main() {
 }
 
 main();
+require('./tools/search');
