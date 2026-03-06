@@ -95,8 +95,8 @@ async function sleep(engine, conversationHistory) {
 
     // distill into permanent brain
     const summary = conversationHistory.slice(-1500);
-    const brain   = semanticBrain.load();
-    await semanticBrain.distill(engine, summary, brain);
+    await semanticBrain.updateLPM(engine, summary);
+    await semanticBrain.consolidateScenes(engine, episodic.load().slice(-20));
   } catch {}
 }
 
