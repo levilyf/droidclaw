@@ -13,10 +13,6 @@ const { showHelp } = require('./tui/menu');
 // Load tools
 require('./tools/exec');
 require('./tools/memory');
-require('./tools/toolmaker');
-require('./tools/scheduler_tools');
-require('./tools/agents');
-require('./tools/state_tools');
 require('./tools/realworld');
 require('./tools/semantic_memory');
 require('./tools/social');
@@ -112,8 +108,6 @@ async function main() {
 
   // Load custom tools from previous sessions
   try {
-    const toolmaker = require('./tools/toolmaker');
-    toolmaker.loadAll();
   } catch {}
 
   await tui.init(async (input) => {
