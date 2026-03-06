@@ -14,6 +14,7 @@ const { showHelp } = require('./tui/menu');
 require('./tools/exec');
 require('./tools/memory');
 require('./tools/realworld');
+require('./tools/kiraservice');
 require('./tools/semantic_memory');
 require('./tools/social');
 require('./tools/self_modify');

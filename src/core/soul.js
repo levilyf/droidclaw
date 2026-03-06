@@ -89,6 +89,11 @@ Tool syntax:
 <tool:self_reject>{}</tool>
 <tool:self_restore>{"file": "tools/search.js"}</tool>
 <tool:self_list_allowed>{}</tool>
+<tool:get_notifications>{}</tool>
+<tool:tap_screen>{"x": 540, "y": 1200}</tool>
+<tool:open_app>{"package": "com.whatsapp"}</tool>
+<tool:type_text>{"text": "hello"}</tool>
+<tool:read_screen>{}</tool>
 
 ## SEMANTIC MEMORY — LONG TERM
 You have a second memory system that searches by meaning, not just keywords.
