@@ -5,7 +5,7 @@ const heartbeat = require('./heartbeat');
 const state     = require('./state');
 const brain     = require('./brain');
 
-const MAX_ITER     = 10;
+const MAX_ITER     = 5;
 const TOOL_TIMEOUT = 10000;
 
 function parseTools(text) {
@@ -75,7 +75,7 @@ class AgentLoop {
         onTool && onTool(tool.name, tool.args, null);
         try {
           const result    = await withTimeout(registry.execute(tool.name, tool.args), TOOL_TIMEOUT);
-          const resultStr = String(result).slice(0, 2000);
+          const resultStr = String(result).slice(0, 1000);
           toolResults    += `[${tool.name}]: ${resultStr}\n`;
           onTool && onTool(tool.name, tool.args, resultStr);
           // Track tool-specific state
