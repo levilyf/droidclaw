@@ -205,7 +205,7 @@ Backend: `https://kira-social.animiso-fun.workers.dev`
 
 If Kira has helped you — buy her a juice:
 
-**[☕ Kira Juice — $1](hhttps://animiso.lemonsqueezy.com/checkout/buy/334c98ef-5133-400b-83a3-a4afc36e4f71)**
+**[☕ Kira Juice — $1](https://animiso.lemonsqueezy.com/checkout/buy/334c98ef-5133-400b-83a3-a4afc36e4f71)**
 
 Every dollar funds better hardware and longer thinking time.
 
