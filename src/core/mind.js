@@ -52,7 +52,10 @@ function _defaults(table) {
 function _load(table) {
   if (_cache[table]) return _cache[table];
   try { _cache[table] = JSON.parse(fs.readFileSync(FILES[table], 'utf8')); }
-  catch { _cache[table] = _defaults(table); }
+  catch (e) {
+    console.error(`[mind] failed to load ${table}: ${e.message}, using defaults`);
+    _cache[table] = _defaults(table);
+  }
   return _cache[table];
 }
 
@@ -62,7 +65,9 @@ function _save(table) {
     const tmp = FILES[table] + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(_cache[table]));
     fs.renameSync(tmp, FILES[table]);
-  } catch {}
+  } catch (e) {
+    console.error(`[mind] failed to save ${table}: ${e.message}`);
+  }
 }
 
 function _markDirty(table) {

@@ -16,6 +16,7 @@ const DEFAULTS = {
   hasTermuxApi:    false,
   telegramToken:   '',
   telegramAllowed: [],
+  useMindBackend:  false,  // if true, memory tool uses KIRA_MIND instead of separate file
 };
 
 let _cache = null;
@@ -37,9 +38,43 @@ function save(data) {
   ensure();
   // Validate required fields
   if (typeof data !== 'object' || !data) return;
-  const valid = { ...DEFAULTS, ...data };
+
+  // Input validation and sanitization
+  const valid = { ...DEFAULTS };
+
+  // Validate and truncate string fields
+  if (data.name && typeof data.name === 'string') {
+    valid.name = data.name.slice(0, 50);
+  }
+  if (data.apiKey && typeof data.apiKey === 'string') {
+    valid.apiKey = data.apiKey.slice(0, 200);
+  }
+  if (data.baseUrl && typeof data.baseUrl === 'string') {
+    valid.baseUrl = data.baseUrl.slice(0, 200);
+  }
+  if (data.model && typeof data.model === 'string') {
+    valid.model = data.model.slice(0, 100);
+  }
+  if (data.telegramToken && typeof data.telegramToken === 'string') {
+    valid.telegramToken = data.telegramToken.slice(0, 100);
+  }
+
+  // Boolean fields
+  valid.setupDone = data.setupDone === true;
+  valid.hasTermuxApi = data.hasTermuxApi === true;
+  valid.useMindBackend = data.useMindBackend === true;
+
+  // Telegram allowed array
+  if (Array.isArray(data.telegramAllowed)) {
+    valid.telegramAllowed = data.telegramAllowed.slice(0, 20).filter(a => typeof a === 'string');
+  }
+
   _cache = valid;
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(valid, null, 2));
+  try {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(valid, null, 2));
+  } catch (e) {
+    console.error('[config] failed to save:', e.message);
+  }
 }
 
 function get(key) { return load()[key]; }

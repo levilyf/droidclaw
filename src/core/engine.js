@@ -36,7 +36,8 @@ class Engine {
   // onToken(text) called for each chunk as it arrives
   // onDone(fullText) called when stream ends
   // returns AbortController so caller can cancel mid-stream
-  chatStream(userMessage, onToken, onDone) {
+  // now includes retry logic for transient errors
+  chatStream(userMessage, onToken, onDone, retries = 3) {
     const cfg = config.load();
     if (!cfg.apiKey) { onDone(''); return null; }
 
@@ -50,22 +51,33 @@ class Engine {
     const irisSystem   = system + '\n\n' + routing.styleInjection;
 
     const controller = new AbortController();
+    let attempt = 0;
+
+    const doStream = () => {
+      attempt++;
+      this._streamRequest(irisSystem, this.history, cfg, routing.profile.maxTokens, controller.signal, onToken)
+        .then(fullText => {
+          this.history.push({ role: 'assistant', content: fullText });
+          onDone && onDone(fullText);
+        })
+        .catch(err => {
+          if (err.name === 'AbortError') {
+            // clean up history — remove the user message we pushed
+            this.history = this.history.slice(0, -1);
+            onDone && onDone(null); // null = interrupted
+          } else if (attempt < retries && _isRetryableError(err)) {
+            // retry on rate limits or transient errors
+            console.log(`[engine] stream attempt ${attempt} failed, retrying in ${attempt * 2}s...`);
+            setTimeout(doStream, attempt * 2000);
+          } else {
+            console.error('[engine] stream error:', err.message);
+            onDone && onDone('');
+          }
+        });
+    };
 
     // run async, return controller immediately so TUI can abort
-    this._streamRequest(irisSystem, this.history, cfg, routing.profile.maxTokens, controller.signal, onToken)
-      .then(fullText => {
-        this.history.push({ role: 'assistant', content: fullText });
-        onDone && onDone(fullText);
-      })
-      .catch(err => {
-        if (err.name === 'AbortError') {
-          // clean up history — remove the user message we pushed
-          this.history = this.history.slice(0, -1);
-          onDone && onDone(null); // null = interrupted
-        } else {
-          onDone && onDone('');
-        }
-      });
+    doStream();
 
     return controller;
   }
@@ -251,6 +263,12 @@ class Engine {
   }
 
   _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  _isRetryableError(err) {
+    // Retry on rate limits (429) or temporary network issues
+    const msg = err.message || '';
+    return msg.includes('429') || msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT') || msg.includes('network');
+  }
 }
 
 function _readEmotion() {

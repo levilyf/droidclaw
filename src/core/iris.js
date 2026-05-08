@@ -248,7 +248,7 @@ function recordDecision(message, profile, emotionState, hour, msgLen) {
     data.decisions = data.decisions.slice(-300);
     data.totalRouted = (data.totalRouted || 0) + 1;
     savePatterns(data);
-  } catch {}
+  } catch (e) { console.error('[iris] failed to record decision:', e.message); }
 }
 
 // call this after a response — 'positive' if user continued naturally, 'negative' if they pushed back
@@ -281,12 +281,15 @@ function getStats() {
 
 function loadPatterns() {
   try { return JSON.parse(fs.readFileSync(IRIS_FILE, 'utf8')); }
-  catch { return { decisions: [], totalRouted: 0 }; }
+  catch (e) {
+    console.error('[iris] failed to load patterns:', e.message);
+    return { decisions: [], totalRouted: 0 };
+  }
 }
 
 function savePatterns(data) {
   try { fs.writeFileSync(IRIS_FILE, JSON.stringify(data, null, 2)); }
-  catch {}
+  catch (e) { console.error('[iris] failed to save patterns:', e.message); }
 }
 
 module.exports = { route, getStats, recordOutcome, PROFILES };
