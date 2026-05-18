@@ -88,12 +88,10 @@ function init() {
   if (!fs.existsSync(DIR)) fs.mkdirSync(DIR, { recursive: true });
   Object.keys(FILES).forEach(_load);
 
-  // run memory decay every 30 minutes during session — not just at sleep
+  // decay timer — only start once
   if (!_decayTimer) {
-    _decayTimer = setInterval(() => {
-      decayMemories();
-    }, 30 * 60 * 1000);
-    _decayTimer.unref(); // don't keep process alive just for this
+    _decayTimer = setInterval(decayMemories, 30 * 60 * 1000);
+    _decayTimer.unref();
   }
 }
 

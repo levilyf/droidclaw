@@ -1,4 +1,7 @@
 'use strict';
+// error boundary — must be first
+require('./error_boundary').install();
+
 const chalk     = require('chalk');
 const config    = require('./config');
 const workspace = require('./workspace');
@@ -22,6 +25,8 @@ require('./tools/social');
 require('./tools/self_modify');
 require('./tools/google');
 require('./tools/search');
+require('./tools/web_fetch');
+require('./tools/task_tools');
 
 // Load skills system (builtin + user installed)
 try {
@@ -31,6 +36,9 @@ try {
 } catch (e) {
   console.error('[kira] skills failed to load:', e.message);
 }
+
+// World model loop — observeTool called directly from loop.js
+require('./world_model_loop');
 
 async function cmd(input, parts) {
   const sub = parts[1];

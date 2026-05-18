@@ -24,47 +24,23 @@ const config   = require('./config');
 const ground   = require('./core/ground');
 
 const DAEMON_FILE   = path.join(os.homedir(), '.droidclaw', 'daemon_state.json');
+const LOG_FILE      = path.join(os.homedir(), '.droidclaw', 'daemon.log');
 const THINK_INTERVAL = 8 * 60 * 1000;  // think every 8 minutes
 const MIN_MESSAGE_GAP = 45 * 60 * 1000; // never message more than once per 45 mins
 
-// ── Single instance lock ──────────────────────────────────────────────────────
-// Prevent two daemons running simultaneously
-const LOCK_FILE = path.join(os.homedir(), '.droidclaw', 'daemon.lock');
-
-function acquireLock() {
-  try {
-    // O_EXCL|O_CREAT is atomic at OS level — only one process wins
-    const fd = fs.openSync(LOCK_FILE, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL);
-    fs.writeSync(fd, String(process.pid));
-    fs.closeSync(fd);
-    return true;
-  } catch {
-    // lock exists — check if owner still alive
-    try {
-      const existingPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim());
-      if (existingPid === process.pid) return true; // we own it
-      process.kill(existingPid, 0); // throws if process dead
-      process.exit(0); // alive duplicate — exit immediately
-    } catch (e) {
-      if (e.code === 'ESRCH') {
-        // dead process — take over lock
-        fs.writeFileSync(LOCK_FILE, String(process.pid));
-        return true;
-      }
-      // we just exited above if alive
-    }
-  }
-}
-
-function releaseLock() {
-  try { fs.unlinkSync(LOCK_FILE); } catch {}
-}
-
-acquireLock();
+// ── Logging ───────────────────────────────────────────────────────────────────
 function log(msg) {
-  // stdout only — the kira launcher redirects stdout to daemon.log
-  // writing to file here AND stdout redirect = every line doubled
-  process.stdout.write(`[${new Date().toLocaleTimeString()}] ${msg}\n`);
+  const line = `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+  process.stdout.write(line);
+  try {
+    fs.appendFileSync(LOG_FILE, line);
+    // keep log under 100kb
+    const stat = fs.statSync(LOG_FILE);
+    if (stat.size > 100000) {
+      const content = fs.readFileSync(LOG_FILE, 'utf8');
+      fs.writeFileSync(LOG_FILE, content.slice(-50000));
+    }
+  } catch {}
 }
 
 // ── Daemon state ──────────────────────────────────────────────────────────────
@@ -106,13 +82,6 @@ async function ensureChatId() {
   if (cfg.telegramChatId) return true;
   if (!cfg.telegramToken) return false;
 
-  // telegramAllowed already contains the chat ID — use it directly
-  if (cfg.telegramAllowed && cfg.telegramAllowed.length) {
-    config.set('telegramChatId', String(cfg.telegramAllowed[0]));
-    return true;
-  }
-
-  // fallback: try getUpdates
   try {
     const res  = await fetch(`https://api.telegram.org/bot${cfg.telegramToken}/getUpdates`);
     const data = await res.json();
@@ -262,15 +231,13 @@ Be honest. Vague inner monologue is useless. If nothing is worth saying, say not
 
     if (!res.ok) return null;
 
-    const data = await res.json();
-    const raw  = data.choices?.[0]?.message?.content || '';
+    const data    = await res.json();
+    const raw     = data.choices?.[0]?.message?.content || '';
+    const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    const match   = cleaned.match(/\{[\s\S]*\}/);
+    if (!match) return null;
 
-    // extract JSON first — find { } block regardless of think tags
-    // M2.7 often puts JSON after an unclosed <think> block
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
-
-    return JSON.parse(jsonMatch[0]);
+    return JSON.parse(match[0]);
 
   } catch { return null; }
 }
@@ -395,7 +362,7 @@ async function runThinkCycle() {
 }
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────
-process.on('SIGINT',  () => { log('daemon stopping'); releaseLock(); ground.stop(); mind.flush(); process.exit(0); });
-process.on('SIGTERM', () => { log('daemon stopping'); releaseLock(); ground.stop(); mind.flush(); process.exit(0); });
+process.on('SIGINT',  () => { log('daemon stopping'); ground.stop(); mind.flush(); process.exit(0); });
+process.on('SIGTERM', () => { log('daemon stopping'); ground.stop(); mind.flush(); process.exit(0); });
 
 main().catch(e => { log(`fatal: ${e.message}`); process.exit(1); });

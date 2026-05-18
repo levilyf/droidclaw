@@ -81,8 +81,15 @@ class Telegram {
     try {
       await this._req('sendChatAction', { chat_id: chatId, action: 'typing' });
       let reply = '';
-      await loop.run(text, () => {}, () => {}, r => { reply = r; });
-      await this._req('sendMessage', { chat_id: chatId, text: (reply || 'done.').slice(0, 4096) });
+      await loop.run(
+        text,
+        () => {},              // onThink
+        () => {},              // onToken
+        () => {},              // onTool
+        (r) => { reply = r; } // onReply
+      );
+      const clean = (reply || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      await this._req('sendMessage', { chat_id: chatId, text: (clean || '...').slice(0, 4096) });
     } catch (e) {
       await this._req('sendMessage', { chat_id: chatId, text: 'error: ' + e.message });
     } finally {
