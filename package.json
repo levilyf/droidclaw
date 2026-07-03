@@ -4,7 +4,7 @@
   "description": "AGI-level AI agent for Android",
   "main": "src/index.js",
   "bin": {
-    "droidclaw": "./src/index.js"
+    "kira": "./bin/kira"
   },
   "scripts": {
     "start": "node src/index.js",

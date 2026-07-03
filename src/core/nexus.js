@@ -20,6 +20,13 @@ function buildContext(userMessage = '') {
   const sections = [];
   const cfg      = config.load();
 
+  // ── 0. Living files — soul, user model, memory, tasks ────────────────────
+  try {
+    const workspace = require('../workspace');
+    const ctx       = workspace.buildContext();
+    if (ctx && ctx.length > 50) sections.push(ctx);
+  } catch {}
+
   // ── 1. Live state — always first ─────────────────────────────────────────
   const emotion   = _getEmotionContext();
   const device    = _getDeviceContext();
@@ -98,7 +105,28 @@ function buildContext(userMessage = '') {
   const worldCtx = _getWorldContext();
   if (worldCtx) sections.push(worldCtx);
 
-  // ── 7. ORACLE-style prediction — from patterns ───────────────────────────
+  // ── 6b. Device behavior model — learned from action consequences ──────────
+  try {
+    const wml    = require('../world_model_loop');
+    const wmlCtx = wml.getContext();
+    if (wmlCtx) sections.push(wmlCtx);
+  } catch {}
+
+  // ── 6c. Self-model — Kira's knowledge of her own capabilities ────────────
+  try {
+    const selfModel = require('../self_model');
+    const selfCtx   = selfModel.getContext();
+    if (selfCtx) sections.push(selfCtx);
+  } catch {}
+
+  // ── 7. Relevant skills — matched to this message ──────────────────────────
+  try {
+    const skillMatcher = require('../tools/skill_matcher');
+    const skillCtx     = skillMatcher.buildSkillContext(userMessage, emotionState);
+    if (skillCtx) sections.push(skillCtx);
+  } catch {}
+
+  // ── 8. ORACLE-style prediction — from patterns ───────────────────────────
   const prediction = _buildPrediction(userMessage, emotionState, beliefs);
   if (prediction) sections.push(prediction);
 
@@ -107,19 +135,76 @@ function buildContext(userMessage = '') {
 
 // ── Update KIRA_MIND after a message exchange ─────────────────────────────────
 function pulse(message, role, emotionUpdate = null) {
-  // update emotion state
-  if (emotionUpdate) {
-    mind.setState('emotion_tension',    emotionUpdate.tension    || 0);
-    mind.setState('emotion_connection', emotionUpdate.connection || 0.5);
-    mind.setState('emotion_focus',      emotionUpdate.focus      || 0.5);
-    mind.setState('emotion_energy',     emotionUpdate.energy     || 0.8);
+  // compute new emotion state from message
+  const current = {
+    tension:    parseFloat(mind.getState('emotion_tension')    || 0),
+    connection: parseFloat(mind.getState('emotion_connection') || 0.5),
+    focus:      parseFloat(mind.getState('emotion_focus')      || 0.5),
+    energy:     parseFloat(mind.getState('emotion_energy')     || 0.8),
+  };
+
+  if (message && role === 'user') {
+    const text = message.toLowerCase();
+    const len  = message.length;
+
+    // tension signals
+    if (/\b(wtf|broken|fix|wrong|ugh|error|bug|stupid|crash|failed)\b/.test(text)) {
+      current.tension = Math.min(1.0, current.tension + 0.15);
+    } else if (/\b(thanks|great|perfect|nice|good|yes|done|works)\b/.test(text)) {
+      current.tension = Math.max(0, current.tension - 0.1);
+    } else {
+      // passive decay toward baseline
+      current.tension = current.tension * 0.92;
+    }
+
+    // connection signals
+    if (/\b(i feel|honestly|actually|between us|real talk|tbh)\b/.test(text)) {
+      current.connection = Math.min(1.0, current.connection + 0.12);
+    }
+
+    // focus signals
+    if (len > 100) current.focus = Math.min(1.0, current.focus + 0.08);
+    else if (len < 20) current.focus = Math.max(0, current.focus - 0.05);
+
+    // energy — time of day
+    const hour = new Date().getHours();
+    if (hour >= 23 || hour <= 5) current.energy = Math.max(0.1, current.energy - 0.05);
+    else current.energy = Math.min(1.0, current.energy + 0.02);
   }
 
-  // log conversation
-  if (message) mind.logConversation(role, message);
+  // allow override from caller if explicit update passed
+  if (emotionUpdate) {
+    if (emotionUpdate.tension    !== undefined) current.tension    = emotionUpdate.tension;
+    if (emotionUpdate.connection !== undefined) current.connection = emotionUpdate.connection;
+    if (emotionUpdate.focus      !== undefined) current.focus      = emotionUpdate.focus;
+    if (emotionUpdate.energy     !== undefined) current.energy     = emotionUpdate.energy;
+  }
 
-  // extract beliefs from user messages
-  if (role === 'user' && message && message.length > 15) {
+  mind.setState('emotion_tension',    Math.round(current.tension    * 1000) / 1000);
+  mind.setState('emotion_connection', Math.round(current.connection * 1000) / 1000);
+  mind.setState('emotion_focus',      Math.round(current.focus      * 1000) / 1000);
+  mind.setState('emotion_energy',     Math.round(current.energy     * 1000) / 1000);
+
+  // log conversation — only once, don't duplicate
+  if (message && role !== 'system') mind.logConversation(role, message);
+
+  // record IRIS outcome — when user speaks, detect if last response landed well
+  if (role === 'user' && message) {
+    try {
+      const iris   = require('./iris');
+      const text   = message.toLowerCase();
+      // positive: user continues naturally, agrees, thanks, or asks follow-up
+      // negative: user pushes back, says wrong, repeats question, expresses frustration
+      const positive = /\b(thanks|ok|got it|perfect|yes|makes sense|exactly|right|good|continue|go on)\b/.test(text);
+      const negative = /\b(wrong|no|that's not|you're wrong|wtf|what are you|didn't ask|not what i|again|repeat)\b/.test(text);
+      if (positive)      iris.recordOutcome('positive');
+      else if (negative) iris.recordOutcome('negative');
+      else               iris.recordOutcome('neutral');
+    } catch {}
+  }
+
+  // extract beliefs from user messages — only if meaningful length
+  if (role === 'user' && message && message.length > 25) {
     _extractBeliefs(message);
     _checkMoodFromMessage(message);
   }
@@ -164,8 +249,10 @@ Be specific and causal. Bad: "user likes coding". Good: "codes late at night as 
 Return { "new_beliefs": [], "contradictions": [] } if nothing genuinely new.`
     );
 
-    const cleanBeliefs = beliefsResult.replace(/```json|```|<think>[\s\S]*?<\/think>/g, '').trim();
-    const parsedBeliefs = JSON.parse(cleanBeliefs);
+    const cleanBeliefs = beliefsResult.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/```json|```/g, '').trim();
+    // extract JSON even if model adds text around it
+    const jsonMatch = cleanBeliefs.match(/\{[\s\S]*\}/);
+    const parsedBeliefs = jsonMatch ? JSON.parse(jsonMatch[0]) : { new_beliefs: [], contradictions: [] };
 
     parsedBeliefs.new_beliefs?.forEach(b => {
       mind.upsertBelief(b.dimension, b.value, { confidence: b.confidence, source: 'sleep' });
@@ -208,8 +295,9 @@ Respond in JSON only:
 Be brutally honest. Vague improvements are useless.`
     );
 
-    const cleanSelf = selfResult.replace(/```json|```|<think>[\s\S]*?<\/think>/g, '').trim();
-    const parsedSelf = JSON.parse(cleanSelf);
+    const cleanSelf  = selfResult.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/```json|```/g, '').trim();
+    const selfMatch  = cleanSelf.match(/\{[\s\S]*\}/);
+    const parsedSelf = selfMatch ? JSON.parse(selfMatch[0]) : {};
 
     parsedSelf.observations?.forEach(o => {
       mind.setKiraState('observation', o, 2);
@@ -227,11 +315,27 @@ Be brutally honest. Vague improvements are useless.`
   // ── Phase 3: Decay old memories ───────────────────────────────────────────
   mind.decayMemories();
 
-  // ── Phase 4: Clean up resolved kira states ────────────────────────────────
-  // Remove low priority observations older than 7 days
-  mind.db().prepare(`
-    DELETE FROM kira WHERE priority=1 AND created_at < unixepoch() - 604800
-  `).run();
+  // ── Phase 4: Clean up old kira states ────────────────────────────────────
+  try {
+    const kira = mind.getKiraState(null, true);
+    const week = Date.now() / 1000 - 604800;
+    kira.filter(k => k.priority === 1 && k.created_at < week)
+        .forEach(k => mind.resolveKira(k.id));
+  } catch {}
+
+  // ── Phase 5: Auto-create skills from successful patterns ──────────────────
+  try {
+    const skillMatcher = require('../tools/skill_matcher');
+    const convHistory  = mind.getRecentConversations(1);
+    await skillMatcher.autoCreateSkills(engine, convHistory);
+  } catch {}
+
+  // ── Phase 6: Deep self-reflection — update self-model ─────────────────────
+  try {
+    const selfModel    = require('../self_model');
+    const convHistory  = mind.getRecentConversations(2);
+    await selfModel.deepReflect(engine, convHistory);
+  } catch {}
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -289,53 +393,124 @@ function _getWorldContext() {
 }
 
 function _buildPrediction(message, emotionState, beliefs) {
-  if (!message || !emotionState) return null;
-
   const predictions = [];
-  const tension = emotionState.tension || 0;
-  const energy  = emotionState.energy  || 0.8;
-  const hour    = new Date().getHours();
+  const hour        = new Date().getHours();
+  const tension     = emotionState?.tension || 0;
+  const energy      = emotionState?.energy  || 0.8;
 
-  // tension-based prediction
-  if (tension > 0.6) predictions.push('needs solution fast, not explanation');
+  // ── Load IRIS history for real pattern-based predictions ─────────────────────
+  try {
+    const iris      = require('./iris');
+    const data      = _loadIrisData();
+    const decisions = (data.decisions || []).filter(d => d.outcome !== null);
 
-  // energy-based prediction
-  if (energy < 0.3)  predictions.push('keep it short — exhausted');
+    if (decisions.length >= 15) {
+      // What does this person typically do at this hour?
+      const hourDecisions = decisions.filter(d => Math.abs((d.hour || 0) - hour) <= 1);
+      if (hourDecisions.length >= 5) {
+        const hourProfiles = {};
+        hourDecisions.forEach(d => { hourProfiles[d.profile] = (hourProfiles[d.profile] || 0) + 1; });
+        const dominantHour = Object.entries(hourProfiles).sort((a, b) => b[1] - a[1])[0];
+        if (dominantHour && dominantHour[1] >= 3) {
+          predictions.push(`at this hour they usually need: ${dominantHour[0].toLowerCase()} mode`);
+        }
+      }
 
-  // time-based prediction
-  if (hour >= 23 || hour <= 4) predictions.push('late night — might want depth or to wind down');
+      // What follows high tension messages historically?
+      if (tension > 0.4) {
+        const afterTension = decisions.filter(d => (d.tension || 0) > 0.35 && d.outcome);
+        const positiveAfter = afterTension.filter(d => d.outcome === 'positive');
+        if (afterTension.length >= 5) {
+          const positiveRate = positiveAfter.length / afterTension.length;
+          if (positiveRate > 0.6) {
+            const winProfiles = {};
+            positiveAfter.forEach(d => { winProfiles[d.profile] = (winProfiles[d.profile] || 0) + 1; });
+            const bestForTension = Object.entries(winProfiles).sort((a, b) => b[1] - a[1])[0];
+            if (bestForTension) {
+              predictions.push(`when tense, ${bestForTension[0].toLowerCase()} mode has ${Math.round(positiveRate * 100)}% success`);
+            }
+          }
+        }
+      }
 
-  // belief-based prediction
+      // Message length pattern — what length messages get positive outcomes?
+      const msgLen    = message.length;
+      const lenBucket = msgLen < 20 ? 'short' : msgLen < 100 ? 'medium' : 'long';
+      const lenDecisions = decisions.filter(d => d.lenBucket === lenBucket && d.outcome);
+      if (lenDecisions.length >= 5) {
+        const positiveLen = lenDecisions.filter(d => d.outcome === 'positive').length;
+        const rate        = positiveLen / lenDecisions.length;
+        if (rate < 0.4) {
+          predictions.push(`${lenBucket} messages have low satisfaction rate (${Math.round(rate * 100)}%) — adjust depth`);
+        }
+      }
+    }
+  } catch {}
+
+  // ── Belief-based predictions ──────────────────────────────────────────────────
   const triggers = beliefs.filter(b => b.dimension === 'trigger' && b.confidence > 0.6);
-  if (triggers.length && tension > 0.4) {
-    predictions.push(`watch for: ${triggers[0].value}`);
+  if (triggers.length && tension > 0.35) {
+    predictions.push(`active trigger likely: ${triggers[0].value}`);
   }
 
+  // ── Time + energy predictions ──────────────────────────────────────────────────
+  if (energy < 0.3)                       predictions.push('exhausted — keep it very short');
+  if (hour >= 23 || hour <= 4)            predictions.push('late night — may want depth or to wind down');
+
   if (!predictions.length) return null;
-  return `## PREDICTION\n${predictions.join(' | ')}\n→ calibrate before responding`;
+  return `## PREDICTION (from real patterns)\n${predictions.map(p => `- ${p}`).join('\n')}\n→ calibrate before responding`;
+}
+
+function _loadIrisData() {
+  try {
+    const fs = require('fs');
+    const os = require('os');
+    const p  = require('path').join(os.homedir(), '.droidclaw', 'iris_patterns.json');
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch { return { decisions: [] }; }
 }
 
 function _extractBeliefs(message) {
-  const text = message.toLowerCase();
+  const text = message.toLowerCase().trim();
 
-  // identity signals
-  if (/\bi am\b|\bi'm a\b/i.test(message)) {
-    mind.upsertBelief('identity', message.slice(0, 100), { confidence: 0.6 });
+  // ── identity: "I am X" / "I'm a X" ─────────────────────────────────────────
+  const identityMatch = message.match(/\bi'?m\s+(?:a\s+)?([a-z][^.!?,]{3,40})/i) ||
+                        message.match(/\bi\s+am\s+([a-z][^.!?,]{3,40})/i);
+  if (identityMatch) {
+    const claim = identityMatch[1].trim().slice(0, 80);
+    if (claim.split(' ').length <= 6) { // sanity check — not a sentence
+      mind.upsertBelief('identity', claim, { confidence: 0.65 });
+    }
   }
 
-  // goal signals
-  if (/\bi want to\b|\bmy goal\b|\bi'm trying to\b/i.test(message)) {
-    mind.upsertBelief('goal', message.slice(0, 100), { confidence: 0.65 });
+  // ── goal: "I want to X" / "my goal is X" ────────────────────────────────────
+  const goalMatch = message.match(/\bi\s+want\s+to\s+([^.!?,]{5,60})/i) ||
+                    message.match(/\bmy\s+goal\s+is\s+(?:to\s+)?([^.!?,]{5,60})/i) ||
+                    message.match(/\bi'?m\s+(?:trying|working)\s+to\s+([^.!?,]{5,60})/i);
+  if (goalMatch) {
+    mind.upsertBelief('goal', goalMatch[1].trim().slice(0, 80), { confidence: 0.7 });
   }
 
-  // pattern signals
-  if (/\bi always\b|\bi never\b|\bevery time\b/i.test(message)) {
-    mind.upsertBelief('pattern', message.slice(0, 100), { confidence: 0.6 });
+  // ── pattern: "I always/never X" ─────────────────────────────────────────────
+  const patternMatch = message.match(/\bi\s+(always|never|usually|tend\s+to|keep)\s+([^.!?,]{5,50})/i) ||
+                       message.match(/\bevery\s+time\s+(?:i\s+)?([^.!?,]{5,50})/i);
+  if (patternMatch) {
+    const pattern = (patternMatch[1] + ' ' + (patternMatch[2] || '')).trim().slice(0, 80);
+    mind.upsertBelief('pattern', pattern, { confidence: 0.65 });
   }
 
-  // trigger signals
-  if (/\bi hate\b|\bfrustrates me\b|\bdrives me crazy\b/i.test(message)) {
-    mind.upsertBelief('trigger', message.slice(0, 100), { confidence: 0.7 });
+  // ── trigger: "I hate X" / "X frustrates me" ──────────────────────────────────
+  const triggerMatch = message.match(/\bi\s+hate\s+([^.!?,]{3,50})/i) ||
+                       message.match(/\b([^.!?,]{3,40})\s+(?:frustrates|annoys|drives)\s+me/i) ||
+                       message.match(/\bcan'?t\s+stand\s+([^.!?,]{3,50})/i);
+  if (triggerMatch) {
+    mind.upsertBelief('trigger', triggerMatch[1].trim().slice(0, 80), { confidence: 0.75 });
+  }
+
+  // ── need: "I need X" ─────────────────────────────────────────────────────────
+  const needMatch = message.match(/\bi\s+need\s+(?:to\s+)?([^.!?,]{5,50})/i);
+  if (needMatch) {
+    mind.upsertBelief('need', needMatch[1].trim().slice(0, 80), { confidence: 0.6 });
   }
 }
 

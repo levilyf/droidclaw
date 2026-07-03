@@ -1,0 +1,116 @@
+#!/usr/bin/env node
+'use strict';
+const { spawn, spawnSync } = require('child_process');
+const fs   = require('fs');
+const path = require('path');
+const os   = require('os');
+
+const DROIDCLAW = path.join(os.homedir(), 'droidclaw');
+const DOT_DIR   = path.join(os.homedir(), '.droidclaw');
+const PID_FILE  = path.join(DOT_DIR, 'daemon.pid');
+const LOCK_FILE = path.join(DOT_DIR, 'daemon.lock');
+const LOG_FILE  = path.join(DOT_DIR, 'daemon.log');
+const DAEMON    = path.join(DROIDCLAW, 'src', 'daemon.js');
+const INDEX     = path.join(DROIDCLAW, 'src', 'index.js');
+
+const HELP = `
+kira — personal AI agent for Android/Termux
+
+usage:  kira [command]
+
+commands:
+  kira         start Kira (default)
+  kira status  show daemon status
+  kira logs [n] view last n daemon log lines (default: 30)
+  kira stop    stop the background daemon
+
+environment:
+  TERMUX_API_PACKAGE   package name for Termux:API (default: com.termux.api)
+  KIRA_CONFIG_PATH     override config directory (default: ~/.droidclaw)
+`.trim();
+
+if (!fs.existsSync(DOT_DIR)) fs.mkdirSync(DOT_DIR, { recursive: true });
+
+const args = process.argv.slice(2);
+
+if (args[0] === 'stop')   { stopDaemon();  process.exit(0); }
+if (args[0] === 'status') { showStatus();  process.exit(0); }
+if (args[0] === 'logs') {
+  const n = parseInt(args[1]) || 30;
+  try {
+    const lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean);
+    console.log(lines.slice(-n).join('\n'));
+  } catch { console.log('no logs yet'); }
+  process.exit(0);
+}
+if (args[0] === '--help' || args[0] === '-h' || args[0] === 'help') {
+  console.log(HELP);
+  process.exit(0);
+}
+
+ensureDaemon();
+launchUI();
+
+// ─── daemon helpers ──────────────────────────────────────────────────────────
+
+function isDaemonRunning() {
+  try {
+    const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim());
+    if (!pid || isNaN(pid)) return false;
+    process.kill(pid, 0);
+    return pid;
+  } catch { return false; }
+}
+
+function ensureDaemon() {
+  if (isDaemonRunning()) return;
+  try { fs.unlinkSync(PID_FILE);  } catch {}
+  try { fs.unlinkSync(LOCK_FILE); } catch {}
+  if (!fs.existsSync(DAEMON)) return;
+  const log   = fs.openSync(LOG_FILE, 'a');
+  const child = spawn(process.execPath, [DAEMON], {
+    detached: true,
+    stdio:    ['ignore', log, log],
+    cwd:      DROIDCLAW,
+  });
+  child.unref();
+  try { fs.writeFileSync(PID_FILE, String(child.pid)); } catch {}
+}
+
+function stopDaemon() {
+  const pid = isDaemonRunning();
+  if (!pid) { console.log('daemon not running'); return; }
+  try {
+    process.kill(pid, 'SIGTERM');
+    try { fs.unlinkSync(PID_FILE);  } catch {}
+    try { fs.unlinkSync(LOCK_FILE); } catch {}
+    console.log('daemon stopped');
+  } catch { console.log('could not stop daemon'); }
+}
+
+function showStatus() {
+  const pid = isDaemonRunning();
+  if (pid) {
+    console.log('daemon: running (pid ' + pid + ')');
+    try {
+      const lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean);
+      console.log('\nlast activity:');
+      lines.slice(-5).forEach(l => console.log(' ', l));
+    } catch {}
+  } else {
+    console.log('daemon: not running — start with: kira');
+  }
+}
+
+function launchUI() {
+  if (!fs.existsSync(INDEX)) {
+    console.error('Kira not found at ' + DROIDCLAW);
+    console.error('Run: cd ~/droidclaw && bash install.sh');
+    process.exit(1);
+  }
+  const child = spawnSync(process.execPath, [INDEX, ...args], {
+    stdio: 'inherit',
+    cwd:   DROIDCLAW,
+  });
+  process.exit(child.status || 0);
+}

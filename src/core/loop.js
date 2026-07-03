@@ -11,6 +11,8 @@ const workspace   = require('../workspace');
 const MAX_ITER        = 5;
 const BACKGROUND_EVERY = 20;
 
+let _loopRunning = false; // mutex to prevent concurrent runs from TUI + Telegram
+
 async function maybeReflect() {
   if (!mind.shouldReflect()) return;
   try {
@@ -22,7 +24,7 @@ async function maybeReflect() {
       `You are Kira. Reflect on recent conversations.\n\n${history}\n\nWrite a short honest journal entry. No report format.`
     );
     if (r && r.length > 50) {
-      const clean = r.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      const clean = r.replace(/thinking[\s\S]*?<\/think>/gi, '').replace(/<\/?think>/gi, '').trim();
       workspace.write('HEARTBEAT', current + `\n\n--- ${new Date().toLocaleDateString()} ---\n${clean}`);
     }
   } catch {}
@@ -50,6 +52,9 @@ class AgentLoop {
   }
 
   async run(userMessage, onThink, onToken, onTool, onReply) {
+    if (_loopRunning) { onReply && onReply('', false); return; }
+    _loopRunning = true;
+    try {
     let iter = 0;
 
     nexus.pulse(userMessage, 'user');
@@ -150,6 +155,7 @@ class AgentLoop {
     this._turnCount++;
     if (this._turnCount % BACKGROUND_EVERY === 0) this._backgroundSave();
     await maybeReflect();
+    } finally { _loopRunning = false; }
   }
 
   _streamTurn(message, onToken) {
@@ -164,7 +170,7 @@ class AgentLoop {
 }
 
 function _cleanOutput(text) {
-  return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  return text.replace(/thinking[\s\S]*?<\/think>/gi, '').replace(/<\/?think>/gi, '').trim();
 }
 
 function _withTimeout(promise, ms) {

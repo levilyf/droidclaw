@@ -227,7 +227,7 @@ Respond in JSON only:
 
 Be brutally honest. Vague self-criticism is useless.`);
 
-    const clean  = result.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    const clean  = result.replace(/thinking[\s\S]*?<\/think>/gi, '').replace(/<\/?think>/gi, '').trim();
     const match  = clean.match(/\{[\s\S]*\}/);
     if (!match) return;
 

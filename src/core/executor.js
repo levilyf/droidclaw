@@ -98,7 +98,7 @@ function parseTools(text) {
 function cleanReply(text) {
   return text
     .replace(/<tool:[\s\S]*?<\/tool>/g, '')
-    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/thinking[\s\S]*?<\/think>/gi, '').replace(/<\/?think>/gi, '')
     .trim();
 }
 

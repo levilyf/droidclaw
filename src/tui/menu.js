@@ -1,131 +1,205 @@
 'use strict';
-const chalk = require('chalk');
+/**
+ * menu.js — blessed overlay menus (modal list widgets).
+ *
+ * Replaces the old raw-ANSI overlay pattern. All drawing goes through blessed
+ * widgets so resizes and renders stay in sync. API unchanged: createMenu(),
+ * prompt(), showHelp() still work exactly as before, but now require the
+ * blessed screen object (passed through from tui as the 4th arg).
+ */
+
+const blessed = require('blessed');
 
 const C = {
-  primary: '#f4a7b9',
-  dim:     '#a0607a',
-  muted:   '#3d1a2a',
-  accent:  '#f9d0dc',
-  mid:     '#7a4060',
-  hint:    '#4a2038',
-  error:   '#e05555',
+  kira:       '#5de4c7',
+  kiraBright: '#9efce7',
+  kiraDim:    '#1f6e5a',
+  border:     '#1a2e2a',
+  panelBg:    '#080f0d',
+  selected:   '#0f2520',
+  itemHot:    '#9efce7',
+  itemDim:    '#2a4a44',
+  user:       '#e8b86d',
+  sys:        '#3d6b5e',
+  muted:      '#1e3530',
+  hint:       '#2a4a44',
+  error:      '#e05560',
 };
 
-// ─── Arrow key menu ──────────────────────────────────────────────────────────
+const fg = (color, text) => `{${color}-fg}${text}{/${color}-fg}`;
 
-function createMenu(title, items, tui) {
+/**
+ * Show a modal list menu. Returns selected index (or -1 if cancelled).
+ * @param {string} title
+ * @param {string[]} items
+ * @param {object} tui — passed through, no longer used for drawing
+ * @param {object} screen — blessed screen from tui._screen
+ */
+async function createMenu(title, items, tui, screen) {
   return new Promise((resolve) => {
     let selected = 0;
-    if (tui) tui.enterMenuMode();
+    const W = Math.min((screen ? screen.width : 80) - 8, 54);
+    const H = Math.min(items.length + 4, 14);
 
-    function draw() {
+    const box = blessed.box({
+      parent: screen,
+      top: 'center', left: 'center',
+      width: W, height: H,
+      tags: true,
+      border: { type: 'line' },
+      style: { border: { fg: C.border, bg: C.panelBg }, bg: C.panelBg },
+      padding: { left: 1, right: 1 },
+    });
+
+    function render() {
       const lines = [];
+      lines.push(' ' + fg(C.kiraBright, ' ◈  ' + title) + ' ' + fg(C.muted, '·'));
       lines.push('');
-      lines.push(`  ${chalk.hex(C.primary)(title)}`);
-      lines.push(`  ${chalk.hex(C.hint)('─'.repeat(30))}`);
       for (let i = 0; i < items.length; i++) {
-        if (i === selected) {
-          lines.push(chalk.hex(C.primary)(`  ◆ ${items[i]}`));
-        } else {
-          lines.push(chalk.hex(C.mid)(`  ◇ ${items[i]}`));
-        }
+        const isSel = i === selected;
+        const icon  = isSel ? fg(C.kira, '❯ ') : '  ';
+        const text  = isSel ? fg(C.itemHot, items[i]) : fg(C.itemDim, items[i]);
+        lines.push(icon + text);
       }
       lines.push('');
-      lines.push(chalk.hex(C.hint)('  j/k  ·  enter  ·  q'));
-      return lines;
+      lines.push(fg(C.hint, '  j/k ↑↓ select  ·  enter ok  ·  q back'));
+      box.setContent(lines.join('\n'));
+      screen.render();
     }
 
-    let lastLines = 0;
+    function cleanup(result) {
+      screen.unkey(['escape'], onEsc);
+      screen.unkey(['up', 'k'], onUp);
+      screen.unkey(['down', 'j'], onDown);
+      screen.unkey(['enter', ' '], onEnter);
+      screen.removeListener('keypress', onKey);
+      box.detach();
+      screen.render();
+      resolve(result);
+    }
 
-    function render(redraw) {
-      const lines = draw();
-      if (redraw && lastLines > 0) {
-        process.stdout.write(`\x1b[${lastLines}A`);
-        for (let i = 0; i < lastLines; i++) process.stdout.write('\x1b[2K\n');
-        process.stdout.write(`\x1b[${lastLines}A`);
+    function onEsc()  { cleanup(-1); }
+    function onUp()   { selected = (selected - 1 + items.length) % items.length; render(); }
+    function onDown() { selected = (selected + 1) % items.length; render(); }
+    function onEnter(){ cleanup(selected); }
+
+    let _esc = '';
+    let _escTimer = null;
+
+    function onKey(ch, key) {
+      const name = key && key.name;
+      if (!key) return;
+      const code = ch && ch.charCodeAt ? ch.charCodeAt(0) : 0;
+      if (code === 3) process.exit(0);
+
+      if (code === 27) {
+        _esc = ch;
+        clearTimeout(_escTimer);
+        _escTimer = setTimeout(() => { _esc = ''; }, 60);
+        return;
       }
-      process.stdout.write(lines.join('\n') + '\n');
-      lastLines = lines.length;
-    }
-
-    render(false);
-
-    // Already in raw mode from TUI — just listen
-    const onData = (chunk) => {
-      for (let i = 0; i < chunk.length; i++) {
-        const byte = chunk.charCodeAt ? chunk.charCodeAt(i) : chunk[i];
-        const c    = typeof chunk === 'string' ? chunk[i] : String.fromCharCode(chunk[i]);
-
-        if (byte === 27) continue; // ESC — skip, handle sequences
-        if (c === '[') continue;   // part of escape sequence
-
-        if      (c === 'k' || c === 'A') { selected = (selected - 1 + items.length) % items.length; render(true); }
-        else if (c === 'j' || c === 'B') { selected = (selected + 1) % items.length; render(true); }
-        else if (byte === 13)            { cleanup(); resolve(selected); return; }
-        else if (c === ' ')              { cleanup(); resolve(selected); return; }
-        else if (c === 'q')              { cleanup(); resolve(-1); return; }
-        else if (byte === 3)             { process.exit(0); }
+      if (_esc) {
+        _esc += ch;
+        clearTimeout(_escTimer);
+        _escTimer = setTimeout(() => { _esc = ''; }, 60);
+        if (_esc === '\u001b[A' || _esc.endsWith('A')) { onUp(); _esc = ''; return; }
+        if (_esc === '\u001b[B' || _esc.endsWith('B')) { onDown(); _esc = ''; return; }
+        if (_esc.length > 4) _esc = '';
+        return;
       }
-    };
 
-    function cleanup() {
-      process.stdin.removeListener('data', onData);
-      if (tui) tui.exitMenuMode();
+      if (ch === 'k') onUp();
+      else if (ch === 'j') onDown();
+      else if (code === 13 || ch === ' ') onEnter();
+      else if (ch === 'q') cleanup(-1);
     }
 
-    process.stdin.on('data', onData);
+    screen.key(['escape'], onEsc);
+    screen.key(['up', 'k'], onUp);
+    screen.key(['down', 'j'], onDown);
+    screen.key(['enter', ' '], onEnter);
+    screen.on('keypress', onKey);
+
+    render();
   });
 }
 
-// ─── Text prompt ─────────────────────────────────────────────────────────────
-
-function prompt(question, defaultVal) {
+/**
+ * Show a text prompt modal.
+ * @param {string} question
+ * @param {string} defaultVal
+ * @param {object} screen
+ */
+async function prompt(question, defaultVal, screen) {
   return new Promise((resolve) => {
-    let buf = '';
-    const q = chalk.hex(C.dim)(`  ${question}`) +
-              (defaultVal ? chalk.hex(C.hint)(` [${defaultVal}]`) : '') +
-              chalk.hex(C.primary)(' › ');
-    process.stdout.write(q);
+    let buf = defaultVal || '';
+    const W = Math.min((screen ? screen.width : 80) - 8, 60);
 
-    const onData = (key) => {
-      for (let i = 0; i < key.length; i++) {
-        const c    = key[i];
-        const code = key.charCodeAt(i);
+    const box = blessed.box({
+      parent: screen,
+      top: 'center', left: 'center',
+      width: W, height: 5,
+      tags: true,
+      border: { type: 'line' },
+      style: { border: { fg: C.border, bg: C.panelBg }, bg: C.panelBg },
+      padding: { left: 1, right: 1 },
+    });
 
-        if (code === 3) process.exit(0);
+    function render() {
+      const lines = [
+        ' ' + fg(C.sys, question),
+        '',
+        ' ' + fg(C.kira, '❯') + ' ' + fg(C.user, buf) + fg(C.kira, '▌'),
+        '',
+        fg(C.hint, '  enter ok  ·  esc cancel'),
+      ];
+      box.setContent(lines.join('\n'));
+      screen.render();
+    }
 
-        if (code === 13 || code === 10) {
-          process.stdout.write('\n');
-          process.stdin.removeListener('data', onData);
-          resolve(buf.trim() || defaultVal || '');
-          return;
-        }
+    function cleanup(result) {
+      screen.unkey(['escape'], onEsc);
+      screen.unkey(['enter'], onEnter);
+      screen.removeListener('keypress', onKey);
+      box.detach();
+      screen.render();
+      resolve(result);
+    }
 
-        if (code === 127 || code === 8) {
-          if (buf.length > 0) {
-            buf = buf.slice(0, -1);
-            process.stdout.write('\u0008 \u0008');
-          }
-          continue;
-        }
+    function onEsc() { cleanup(defaultVal || ''); }
+    function onEnter() { cleanup(buf.trim() || defaultVal || ''); }
 
-        if (code >= 32 && code < 127) {
-          buf += c;
-          process.stdout.write(chalk.hex(C.mid)(c));
-        }
+    function onKey(ch, key) {
+      const code = ch && ch.charCodeAt ? ch.charCodeAt(0) : 0;
+      if (code === 3) process.exit(0);
+      if (code === 13) { onEnter(); return; }
+      if (code === 27) { onEsc(); return; }
+      if (code === 127 || code === 8) {
+        if (buf.length > 0) { buf = buf.slice(0, -1); render(); }
+        return;
       }
-    };
+      if (key && (key.ctrl || key.meta)) return;
+      if (ch && ch.charCodeAt(0) >= 32) {
+        buf += ch; render();
+      }
+    }
 
-    process.stdin.on('data', onData);
+    screen.key(['escape'], onEsc);
+    screen.key(['enter'], onEnter);
+    screen.on('keypress', onKey);
+
+    render();
   });
 }
 
-// ─── Help / control panel ────────────────────────────────────────────────────
-
+/**
+ * Control panel menu (the old /help overlay).
+ */
 async function showHelp(tui) {
+  const screen = tui._screen;
   while (true) {
     const choice = await createMenu('kira — control panel', [
-      'about kira',
+      'about',
       'provider & model',
       'integrations',
       'voice',
@@ -135,120 +209,107 @@ async function showHelp(tui) {
       'device info',
       'danger zone',
       'close',
-    ], tui);
+    ], tui, screen);
 
     if (choice === -1 || choice === 9) break;
-
-    if (choice === 0) await _aboutKira(tui);
-    else if (choice === 1) await _changeProvider(tui);
-    else if (choice === 2) await _integrations(tui);
-    else if (choice === 3) await _voiceSettings(tui);
-    else if (choice === 4) await _memory(tui);
-    else if (choice === 5) await _scheduler(tui);
-    else if (choice === 6) await _workspace(tui);
-    else if (choice === 7) await _deviceInfo(tui);
-    else if (choice === 8) await _dangerZone(tui);
+    if      (choice === 0) await _aboutKira(tui, screen);
+    else if (choice === 1) await _changeProvider(tui, screen);
+    else if (choice === 2) await _integrations(tui, screen);
+    else if (choice === 3) await _voiceSettings(tui, screen);
+    else if (choice === 4) await _memory(tui, screen);
+    else if (choice === 5) await _scheduler(tui, screen);
+    else if (choice === 6) await _workspace(tui, screen);
+    else if (choice === 7) await _deviceInfo(tui, screen);
+    else if (choice === 8) await _dangerZone(tui, screen);
   }
 }
 
-async function _integrations(tui) {
+async function _integrations(tui, screen) {
   while (true) {
     const choice = await createMenu('integrations', [
       'telegram',
       'proactive mode',
-      'discord (coming soon)',
-      'spotify (coming soon)',
+      'discord  (coming soon)',
       'back',
-    ], tui);
-
-    if (choice === -1 || choice === 4) break;
-    if (choice === 0) await _toggleTelegram(tui);
-    else if (choice === 1) await _proactiveSettings(tui);
-    else tui.addMessage('system', 'coming soon.');
+    ], tui, screen);
+    if (choice === -1 || choice === 3) break;
+    if      (choice === 0) await _toggleTelegram(tui, screen);
+    else if (choice === 1) await _proactiveSettings(tui, screen);
+    else { tui.addMessage('system', 'coming soon.'); }
   }
 }
 
-async function _proactiveSettings(tui) {
+async function _proactiveSettings(tui, screen) {
   const config = require('../config');
   const cfg    = config.load();
   const p      = cfg.proactive || {};
 
   const choice = await createMenu('proactive mode', [
-    `status: ${p.enabled ? 'on' : 'off'}`,
-    `allow SMS: ${p.allowSMS ? 'yes' : 'no'}`,
-    `allow notifications: ${p.allowNotify !== false ? 'yes' : 'no'}`,
-    `allow goal pursuit: ${p.allowGoalPursuit ? 'yes' : 'no'}`,
-    `interval: every ${p.interval || 30} mins`,
+    'status: '           + (p.enabled             ? 'on'  : 'off'),
+    'allow SMS: '        + (p.allowSMS             ? 'yes' : 'no'),
+    'allow notifications: ' + (p.allowNotify !== false ? 'yes' : 'no'),
+    'allow goal pursuit: '  + (p.allowGoalPursuit   ? 'yes' : 'no'),
+    'interval: every '   + (p.interval || 30) + ' mins',
     'back',
-  ], tui);
+  ], tui, screen);
 
   if (choice === -1 || choice === 5) return;
-
   const updated = { ...p };
-
   if (choice === 0) {
     updated.enabled = !p.enabled;
     const proactive = require('../core/proactive');
-    if (updated.enabled) proactive.start();
-    else proactive.stop();
-    tui.addMessage('system', `proactive mode ${updated.enabled ? 'on' : 'off'}.`);
+    if (updated.enabled) proactive.start(); else proactive.stop();
+    tui.addMessage('system', `proactive ${updated.enabled ? 'on' : 'off'}.`);
   } else if (choice === 1) {
     updated.allowSMS = !p.allowSMS;
     tui.addMessage('system', `SMS ${updated.allowSMS ? 'allowed' : 'blocked'}.`);
   } else if (choice === 2) {
-    updated.allowNotify = p.allowNotify === false ? true : false;
+    updated.allowNotify = p.allowNotify === false;
     tui.addMessage('system', `notifications ${updated.allowNotify ? 'allowed' : 'blocked'}.`);
   } else if (choice === 3) {
     updated.allowGoalPursuit = !p.allowGoalPursuit;
     tui.addMessage('system', `goal pursuit ${updated.allowGoalPursuit ? 'on' : 'off'}.`);
   } else if (choice === 4) {
-    process.stdout.write('\n');
-    const mins = await prompt('check interval (minutes)', String(p.interval || 30));
+    const mins = await prompt('check interval (minutes)', String(p.interval || 30), screen);
     updated.interval = parseInt(mins) || 30;
-    tui.addMessage('system', `interval set to ${updated.interval} mins.`);
+    tui.addMessage('system', `interval → ${updated.interval}m.`);
   }
-
   config.save({ ...cfg, proactive: updated });
 }
 
-async function _aboutKira(tui) {
-  process.stdout.write('\n');
-  console.log(chalk.hex('#f4a7b9')([
-    '  i\'m kira.',
-    '  i run on your phone. i use real tools.',
-    '  i build new ones when i need them.',
-    '  i remember things. i notice patterns.',
-    '  i act while you sleep.',
-    '  i\'m not an assistant. i\'m an agent.',
+async function _aboutKira(tui, screen) {
+  const lines = [
+    fg(C.kiraBright, '  ◈  kira.'),
+    fg(C.sys, '  running on your device. real tools. real memory.'),
+    fg(C.sys, '  she thinks while you sleep.'),
     '',
-    '  commands:',
-    '  /help        — this menu',
-    '  /status      — system info',
-    '  /memory      — stored facts',
-    '  /workspace   — docs',
-    '  /reload      — reload config',
-    '  /clear       — clear history',
-    '  /exit        — save and quit',
-  ].join('\n')));
-  process.stdout.write('\n');
-  await prompt('press enter to go back', '');
+    fg(C.kiraDim, '  ── commands '),
+    fg(C.hint, '  /help       ') + fg(C.sys, 'this panel'),
+    fg(C.hint, '  /status     ') + fg(C.sys, 'system info'),
+    fg(C.hint, '  /memory     ') + fg(C.sys, 'stored facts'),
+    fg(C.hint, '  /workspace  ') + fg(C.sys, 'documents'),
+    fg(C.hint, '  /reload     ') + fg(C.sys, 'reload config'),
+    fg(C.hint, '  /clear      ') + fg(C.sys, 'clear history'),
+    fg(C.hint, '  /exit       ') + fg(C.sys, 'save and quit'),
+  ];
+  tui.addMessage('system', lines.join('\n'));
+  await prompt('enter to go back', '', screen);
 }
 
-async function _toggleTelegram(tui) {
+async function _toggleTelegram(tui, screen) {
   const config   = require('../config');
   const telegram = require('../integrations/telegram');
   const cfg      = config.load();
 
   if (!cfg.telegramToken) {
-    process.stdout.write('\n');
     tui.addMessage('system', 'no telegram token set.');
-    const token = await prompt('bot token (from @BotFather)');
+    const token = await prompt('bot token (from @BotFather)', '', screen);
     if (token) {
       config.set('telegramToken', token);
-      const userId = await prompt('your telegram user ID');
+      const userId = await prompt('your telegram user ID', '', screen);
       if (userId) config.set('telegramAllowed', [userId]);
       telegram.stop();
-      await telegram.start(msg => tui.addMessage('system', `tg: ${msg}`));
+      await telegram.start(msg => tui.addMessage('system', 'tg: ' + msg));
       tui.addMessage('system', 'telegram started.');
     }
     return;
@@ -260,219 +321,181 @@ async function _toggleTelegram(tui) {
     'view allowed users',
     'remove token',
     'back',
-  ], tui);
+  ], tui, screen);
 
   if (choice === 0) {
-    if (telegram.running) {
-      telegram.stop();
-      tui.addMessage('system', 'telegram stopped.');
-    } else {
-      await telegram.start(msg => tui.addMessage('system', `tg: ${msg}`));
-      tui.addMessage('system', 'telegram started.');
-    }
+    if (telegram.running) { telegram.stop(); tui.addMessage('system', 'stopped.'); }
+    else { await telegram.start(msg => tui.addMessage('system', 'tg: ' + msg)); tui.addMessage('system', 'started.'); }
   } else if (choice === 1) {
-    process.stdout.write('\n');
-    tui.addMessage('system', 'tip: message @userinfobot on telegram to get your ID');
-    const userId = await prompt('user ID');
+    tui.addMessage('system', 'tip: message @userinfobot to get your ID');
+    const userId = await prompt('user ID', '', screen);
     if (userId) {
       const allowed = cfg.telegramAllowed || [];
       if (!allowed.includes(userId)) { allowed.push(userId); config.set('telegramAllowed', allowed); }
-      tui.addMessage('system', `allowed: ${userId}`);
+      tui.addMessage('system', 'allowed: ' + userId);
     }
   } else if (choice === 2) {
     const allowed = cfg.telegramAllowed || [];
     tui.addMessage('system', allowed.length ? allowed.join(', ') : 'no users set');
-    await prompt('press enter', '');
+    await prompt('enter to go back', '', screen);
   } else if (choice === 3) {
-    telegram.stop();
-    config.set('telegramToken', '');
+    telegram.stop(); config.set('telegramToken', '');
     tui.addMessage('system', 'telegram removed.');
   }
 }
 
-async function _changeProvider(tui) {
+async function _changeProvider(tui, screen) {
   const config = require('../config');
   const engine = require('../core/engine');
   const soul   = require('../core/soul');
 
   const PROVIDERS = [
-    { label: 'OpenAI',      url: 'https://api.openai.com/v1',          model: 'gpt-4o-mini' },
+    { label: 'NVIDIA NIM',  url: 'https://integrate.api.nvidia.com/v1', model: 'moonshotai/kimi-k2-instruct' },
+    { label: 'OpenAI',      url: 'https://api.openai.com/v1',           model: 'gpt-4o-mini' },
     { label: 'Anthropic',   url: 'https://api.anthropic.com/v1',        model: 'claude-sonnet-4-6' },
     { label: 'Groq',        url: 'https://api.groq.com/openai/v1',      model: 'llama-3.3-70b-versatile' },
     { label: 'Together AI', url: 'https://api.together.xyz/v1',         model: 'meta-llama/Llama-3-70b-chat-hf' },
     { label: 'Mistral',     url: 'https://api.mistral.ai/v1',           model: 'mistral-small-latest' },
-    { label: 'Ollama',      url: 'http://localhost:11434/v1',            model: 'llama3' },
-    { label: 'NVIDIA NIM',  url: 'https://integrate.api.nvidia.com/v1', model: 'moonshotai/kimi-k2-instruct' },
-    { label: 'Custom',      url: '',                                     model: '' },
-    { label: 'Back',        url: null,                                   model: null },
+    { label: 'Ollama',      url: 'http://localhost:11434/v1',           model: 'llama3' },
+    { label: 'Custom',      url: '',                                    model: '' },
+    { label: 'back',        url: null,                                  model: null },
   ];
 
-  const p = await createMenu('provider', PROVIDERS.map(p => p.label), tui);
-  if (p === -1 || p === 8) return;
+  const p = await createMenu('provider', PROVIDERS.map(p => p.label), tui, screen);
+  if (p === -1 || p === PROVIDERS.length - 1) return;
 
-  const cfg     = config.load();
   const preset  = PROVIDERS[p];
-  process.stdout.write('\n');
-  const apiKey  = await prompt('api key', p === 5 ? 'ollama' : cfg.apiKey);
-  const baseUrl = await prompt('base url', preset.url || cfg.baseUrl);
-  const model   = await prompt('model', preset.model || cfg.model);
+  const cfg     = config.load();
+  const apiKey  = await prompt('api key', p === 6 ? 'ollama' : cfg.apiKey, screen);
+  const baseUrl = await prompt('base url', preset.url || cfg.baseUrl, screen);
+  const model   = await prompt('model', preset.model || cfg.model, screen);
 
   config.save({ ...cfg, apiKey, baseUrl, model });
   engine.init(soul);
-  tui.addMessage('system', `switched to ${preset.label} — ${model}`);
+  tui.addMessage('system', `switched → ${preset.label}  ${model}`);
 }
 
-async function _voiceSettings(tui) {
+async function _voiceSettings(tui, screen) {
   const config = require('../config');
   const cfg    = config.load();
 
   const choice = await createMenu('voice', [
-    cfg.elevenLabsKey ? 'voice: on — turn off' : 'voice: off — turn on',
+    cfg.elevenLabsKey ? 'voice on — turn off' : 'voice off — turn on',
     'change voice ID',
     'test voice',
     'back',
-  ], tui);
+  ], tui, screen);
 
   if (choice === 0) {
     if (cfg.elevenLabsKey) {
       config.set('elevenLabsKey', '');
-      tui.addMessage('system', 'voice disabled.');
+      tui.addMessage('system', 'voice off.');
     } else {
-      process.stdout.write('\n');
-      const key = await prompt('ElevenLabs API key');
-      if (key) { config.set('elevenLabsKey', key); tui.addMessage('system', 'voice enabled.'); }
+      const key = await prompt('ElevenLabs API key', '', screen);
+      if (key) { config.set('elevenLabsKey', key); tui.addMessage('system', 'voice on.'); }
     }
   } else if (choice === 1) {
-    process.stdout.write('\n');
-    const voiceId = await prompt('voice ID', cfg.elevenLabsVoiceId || '21m00Tcm4TlvDq8ikWAM');
+    const voiceId = await prompt('voice ID', cfg.elevenLabsVoiceId || '21m00Tcm4TlvDq8ikWAM', screen);
     if (voiceId) { config.set('elevenLabsVoiceId', voiceId); tui.addMessage('system', 'voice ID updated.'); }
   } else if (choice === 2) {
-    tui.addMessage('system', 'testing voice...');
+    tui.addMessage('system', 'testing voice…');
     try {
       const registry = require('../tools/registry');
       const result   = await registry.execute('elevenlabs', { text: "hey. it's kira." });
       tui.addMessage('system', result);
-    } catch { tui.addMessage('error', 'voice tool not built yet. ask kira to build it.'); }
+    } catch { tui.addMessage('error', 'voice tool not available.'); }
   }
 }
 
-async function _memory(tui) {
-  const mem  = require('../tools/memory');
-
+async function _memory(tui, screen) {
+  const mem = require('../tools/memory');
   while (true) {
-    const choice = await createMenu('memory', [
-      'view all',
-      'delete a key',
-      'wipe all memory',
-      'back',
-    ], tui);
-
+    const choice = await createMenu('memory', ['view all', 'delete a key', 'wipe all', 'back'], tui, screen);
     if (choice === -1 || choice === 3) break;
-
     if (choice === 0) {
       const data = mem.load();
       const keys = Object.keys(data);
-      process.stdout.write('\n');
-      if (!keys.length) {
-        tui.addMessage('system', 'memory is empty.');
-      } else {
-        keys.forEach(k => tui.addMessage('system', `${k}: ${data[k].value}`));
-      }
-      await prompt('press enter', '');
+      if (!keys.length) tui.addMessage('system', 'memory empty.');
+      else keys.forEach(k => tui.addMessage('system', `${k}: ${data[k].value}`));
+      await prompt('enter to go back', '', screen);
     } else if (choice === 1) {
-      process.stdout.write('\n');
-      const key = await prompt('key to delete');
-      if (key) { mem.save({ ...mem.load(), [key]: undefined }); tui.addMessage('system', `deleted: ${key}`); }
+      const key = await prompt('key to delete', '', screen);
+      if (key) { const d = mem.load(); delete d[key]; mem.save(d); tui.addMessage('system', 'deleted: ' + key); }
     } else if (choice === 2) {
-      const confirm = await createMenu('wipe all memory?', ['yes, wipe everything', 'cancel'], tui);
+      const confirm = await createMenu('wipe all memory?', ['yes — wipe everything', 'cancel'], tui, screen);
       if (confirm === 0) { mem.save({}); tui.addMessage('system', 'memory wiped.'); }
     }
   }
 }
 
-async function _scheduler(tui) {
-  const scheduler = require('../core/scheduler');
-
+async function _scheduler(tui, screen) {
+  let scheduler;
+  try { scheduler = require('../core/scheduler'); } catch {
+    tui.addMessage('system', 'scheduler not available (removed in e8e97c7).');
+    return;
+  }
   while (true) {
-    const jobs   = scheduler.listJobs();
-    const choice = await createMenu('scheduler', [
-      'view jobs',
-      'remove a job',
-      'back',
-    ], tui);
-
+    const choice = await createMenu('scheduler', ['view jobs', 'remove a job', 'back'], tui, screen);
     if (choice === -1 || choice === 2) break;
-
     if (choice === 0) {
-      process.stdout.write('\n');
-      if (!jobs.length) {
-        tui.addMessage('system', 'no scheduled jobs.');
-      } else {
-        jobs.forEach(j => tui.addMessage('system', `${j.name} (${j.type}) — next: ${j.next} — ran ${j.runs}x`));
-      }
-      await prompt('press enter', '');
+      const jobs = scheduler.listJobs();
+      if (!jobs.length) tui.addMessage('system', 'no scheduled jobs.');
+      else jobs.forEach(j => tui.addMessage('system', `${j.name} (${j.type}) — next: ${j.next} — ran ${j.runs}x`));
+      await prompt('enter to go back', '', screen);
     } else if (choice === 1) {
-      process.stdout.write('\n');
-      const name = await prompt('job name to remove');
+      const name = await prompt('job name', '', screen);
       if (name) {
         const removed = scheduler.removeJob(name);
-        tui.addMessage('system', removed ? `removed: ${name}` : `not found: ${name}`);
+        tui.addMessage('system', removed ? 'removed: ' + name : 'not found: ' + name);
       }
     }
   }
 }
 
-async function _workspace(tui) {
+async function _workspace(tui, screen) {
   const workspace = require('../workspace');
   const docs      = Object.keys(workspace.DOCS);
-
-  const choice = await createMenu('workspace', [...docs, 'back'], tui);
+  const choice    = await createMenu('workspace', [...docs, 'back'], tui, screen);
   if (choice === -1 || choice === docs.length) return;
-
   const content = workspace.read(docs[choice]);
-  process.stdout.write('\n');
   tui.addMessage('system', content || 'empty.');
-  await prompt('press enter', '');
+  await prompt('enter to go back', '', screen);
 }
 
-async function _deviceInfo(tui) {
+async function _deviceInfo(tui, screen) {
   const { execSync } = require('child_process');
   const info = [];
-  try { info.push(`device  : ${execSync('getprop ro.product.model',          { encoding: 'utf8', timeout: 2000 }).trim()}`); } catch {}
-  try { info.push(`android : ${execSync('getprop ro.build.version.release',   { encoding: 'utf8', timeout: 2000 }).trim()}`); } catch {}
-  try { info.push(`arch    : ${execSync('uname -m',                           { encoding: 'utf8', timeout: 2000 }).trim()}`); } catch {}
-  info.push(`node    : ${process.version}`);
-  info.push(`uptime  : ${require('../core/heartbeat').info().uptime}`);
-  process.stdout.write('\n');
-  tui.addMessage('system', info.join('\n  '));
-  await prompt('press enter', '');
+  try { info.push('device  : ' + execSync('getprop ro.product.model',        { encoding: 'utf8', timeout: 2000 }).trim()); } catch {}
+  try { info.push('android : ' + execSync('getprop ro.build.version.release', { encoding: 'utf8', timeout: 2000 }).trim()); } catch {}
+  try { info.push('arch    : ' + execSync('uname -m',                         { encoding: 'utf8', timeout: 2000 }).trim()); } catch {}
+  info.push('node    : ' + process.version);
+  info.push('uptime  : ' + require('../core/heartbeat').info().uptime());
+  tui.addMessage('system', info.join('\n'));
+  await prompt('enter to go back', '', screen);
 }
 
-async function _dangerZone(tui) {
+async function _dangerZone(tui, screen) {
   const choice = await createMenu('danger zone', [
     'reset setup (keep memory)',
     'wipe all memory',
-    'full reset (everything)',
+    'full reset — everything',
     'back',
-  ], tui);
-
+  ], tui, screen);
   if (choice === 0) {
-    const confirm = await createMenu('reset setup?', ['yes', 'cancel'], tui);
+    const confirm = await createMenu('reset setup?', ['yes', 'cancel'], tui, screen);
     if (confirm === 0) { require('../config').set('setupDone', false); tui.addMessage('system', 'reset. restart to run setup.'); }
   } else if (choice === 1) {
-    const confirm = await createMenu('wipe memory?', ['yes', 'cancel'], tui);
+    const confirm = await createMenu('wipe memory?', ['yes', 'cancel'], tui, screen);
     if (confirm === 0) { require('../tools/memory').save({}); tui.addMessage('system', 'memory wiped.'); }
   } else if (choice === 2) {
-    const confirm = await createMenu('full reset? this deletes everything.', ['yes, reset everything', 'cancel'], tui);
+    const confirm = await createMenu('full reset?', ['yes — reset everything', 'cancel'], tui, screen);
     if (confirm === 0) {
       require('../tools/memory').save({});
       require('../config').set('setupDone', false);
-      tui.addMessage('system', 'full reset done. restart kira.');
+      tui.addMessage('system', 'full reset. restart kira.');
     }
   }
 }
 
-// Legacy alias for /config command
 const showConfig = showHelp;
-
-module.exports = { showHelp, showConfig, createMenu, prompt };
+module.exports   = { showHelp, showConfig, createMenu, prompt };

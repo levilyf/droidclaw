@@ -233,7 +233,7 @@ Be honest. Vague inner monologue is useless. If nothing is worth saying, say not
 
     const data    = await res.json();
     const raw     = data.choices?.[0]?.message?.content || '';
-    const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    const cleaned = raw.replace(/thinking[\s\S]*?<\/think>/gi, '').replace(/<\/?think>/gi, '').trim();
     const match   = cleaned.match(/\{[\s\S]*\}/);
     if (!match) return null;
 
@@ -318,7 +318,11 @@ async function processThought(thought) {
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
+let _mainRunning = false;
+
 async function main() {
+  if (_mainRunning) { log('main already running — skipping duplicate start'); return; }
+  _mainRunning = true;
   log('kira daemon starting...');
 
   mind.init();
@@ -365,4 +369,16 @@ async function runThinkCycle() {
 process.on('SIGINT',  () => { log('daemon stopping'); ground.stop(); mind.flush(); process.exit(0); });
 process.on('SIGTERM', () => { log('daemon stopping'); ground.stop(); mind.flush(); process.exit(0); });
 
-main().catch(e => { log(`fatal: ${e.message}`); process.exit(1); });
+// ── Crash recovery ─────────────────────────────────────────────────────────────
+process.on('uncaughtException', (e) => {
+  log(`uncaught: ${e.message} (restarting in 5s)`);
+  _mainRunning = false;
+  setTimeout(() => main(), 5000);
+});
+process.on('unhandledRejection', (reason) => {
+  log(`unhandled rejection: ${reason?.message || reason} (restarting in 5s)`);
+  _mainRunning = false;
+  setTimeout(() => main(), 5000);
+});
+
+main().catch(e => { log(`fatal: ${e.message} (restarting in 10s)`); _mainRunning = false; setTimeout(() => main(), 10000); });

@@ -213,7 +213,29 @@ function logSession(summary) {
 }
 
 function buildContext() {
-  return Object.keys(DOCS).map(k => `### ${k}\n${read(k)}`).join('\n\n');
+  // only inject files that have real content — skip empty templates
+  const relevant = ['SOUL', 'USER', 'MEMORY', 'HEARTBEAT'];
+  return relevant
+    .map(k => {
+      const content = read(k);
+      if (!content || content.length < 50) return null;
+      // strip template placeholder lines
+      const cleaned = content
+        .split('\n')
+        .filter(l => !l.includes('*Still learning') &&
+                     !l.includes('*Observing') &&
+                     !l.includes('*Nothing yet') &&
+                     !l.includes('*None yet') &&
+                     !l.includes('*Unknown') &&
+                     !l.includes('*Auto-detected') &&
+                     !l.includes('*To be discovered') &&
+                     !l.includes('*Discovering'))
+        .join('\n')
+        .trim();
+      return cleaned.length > 50 ? cleaned : null;
+    })
+    .filter(Boolean)
+    .join('\n\n---\n\n');
 }
 
 module.exports = { init, read, write, append, logSession, buildContext, WORKSPACE_DIR, DOCS };
